@@ -32,8 +32,7 @@ const STEPS = [
 ] as const
 
 const STEP_MS = 1100
-const HISTORY_KEY = 'summarizer-history'
-const HISTORY_LIMIT = 10
+const HISTORY_LIMIT = 20
 const READING_WPM = 200
 
 type Insights = { keyPoints: string[]; keywords: string[] }
@@ -49,7 +48,9 @@ type CompareState = { inputWords: number; summaries: Record<TierId, string> }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
-const countWords = (text: string) => text.trim().split(/\s+/).filter(Boolean).length
+// Counts real words only (ignores bullets and stray symbols)
+const countWords = (text: string) =>
+  text.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length
 
 /* ---------- Local text helpers (used as fallback / for insights) ---------- */
 
@@ -108,6 +109,24 @@ const extractKeyPoints = (text: string, n = 3) =>
 
 const TIER_RATIO: Record<TierId, number> = { easy: 0.2, hard: 0.4, editorial: 0.6 }
 
+const chunk = (items: string[], size: number) => {
+  const out: string[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
+
+// Lay the chosen sentences out differently for each tier
+//  Easy      -> short bullet list (TL;DR)
+//  Hard      -> short paragraphs, 2 sentences each
+//  Editorial -> a lead paragraph, then body paragraphs
+const formatSummary = (sentences: string[], tier: TierId) => {
+  if (sentences.length === 0) return ''
+  if (tier === 'easy') return sentences.map((s) => `• ${s}`).join('\n')
+  if (tier === 'hard') return chunk(sentences, 2).map((p) => p.join(' ')).join('\n\n')
+  const [lead, ...rest] = sentences
+  return [lead, ...chunk(rest, 3).map((p) => p.join(' '))].join('\n\n')
+}
+
 // Local fallback so the demo still produces a result when the API isn't available
 const localSummarize = (text: string, tier: TierId) => {
   const sentences = splitSentences(text)
@@ -117,7 +136,7 @@ const localSummarize = (text: string, tier: TierId) => {
     sentences.length,
     Math.max(rank, Math.round(sentences.length * TIER_RATIO[tier]))
   )
-  return pickTop(sentences, take).join(' ')
+  return formatSummary(pickTop(sentences, take), tier)
 }
 
 const generate = async (text: string, tier: TierId): Promise<GenResult> => {
@@ -192,28 +211,25 @@ const DashboardView = () => {
 
   const [lastRun, setLastRun] = React.useState<RunMeta | null>(null)
   const [history, setHistory] = React.useState<HistoryItem[]>([])
-  const [hydrated, setHydrated] = React.useState(false)
   const [compare, setCompare] = React.useState<CompareState | null>(null)
   const [comparing, setComparing] = React.useState(false)
 
   const progress = Math.round((step / STEPS.length) * 100)
   const summaryWords = countWords(summary)
 
-  /* History persistence */
+  /* Load this user's history from the database */
   React.useEffect(() => {
-    try {
-      const raw = localStorage.getItem(HISTORY_KEY)
-      if (raw) setHistory(JSON.parse(raw))
-    } catch {}
-    setHydrated(true)
+    let cancelled = false
+    fetch('/api/summaries')
+      .then((res) => (res.ok ? res.json() : []))
+      .then((items: HistoryItem[]) => {
+        if (!cancelled && Array.isArray(items)) setHistory(items)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
   }, [])
-
-  React.useEffect(() => {
-    if (!hydrated) return
-    try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(history))
-    } catch {}
-  }, [history, hydrated])
 
   const handleCopy = async () => {
     if (!summary) return
@@ -225,7 +241,8 @@ const DashboardView = () => {
   const handleExport = () => {
     if (!summary) return
     const tierLabel = TIERS.find((t) => t.id === (lastRun?.tier ?? tier))?.label
-    const lines = [`# Summary (${tierLabel})`, '', summary]
+    // Turn the "• " bullets into real Markdown list items
+    const lines = [`# Summary (${tierLabel})`, '', summary.replace(/^• /gm, '- ')]
     if (lastRun?.keyPoints.length) {
       lines.push('', '## Key takeaways', ...lastRun.keyPoints.map((p) => `- ${p}`))
     }
@@ -283,18 +300,19 @@ const DashboardView = () => {
         keywords: result.keywords?.length ? result.keywords : extractKeywords(runInput),
       }
       setLastRun(meta)
-      setHistory((prev) =>
-        [
-          {
-            ...meta,
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            input: runInput.slice(0, 20000),
-            summary: result.summary,
-            createdAt: Date.now(),
-          },
-          ...prev,
-        ].slice(0, HISTORY_LIMIT)
-      )
+
+      // Save to the user's history (a failed save shouldn't hide the summary)
+      try {
+        const res = await fetch('/api/summaries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...meta, input: runInput, summary: result.summary }),
+        })
+        if (res.ok) {
+          const saved: HistoryItem = await res.json()
+          setHistory((prev) => [saved, ...prev].slice(0, HISTORY_LIMIT))
+        }
+      } catch {}
     } catch {
       setProcessing(false)
       setSummary('Something went wrong while generating the summary. Please try again.')
@@ -336,6 +354,16 @@ const DashboardView = () => {
     })
     setCompare(null)
     window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const removeHistoryItem = (id: string) => {
+    setHistory((prev) => prev.filter((h) => h.id !== id))
+    fetch(`/api/summaries/${id}`, { method: 'DELETE' }).catch(() => {})
+  }
+
+  const clearHistory = () => {
+    setHistory([])
+    fetch('/api/summaries', { method: 'DELETE' }).catch(() => {})
   }
 
   const showInsights = !!lastRun && !!summary && !loading
@@ -671,7 +699,7 @@ const DashboardView = () => {
                 type='button'
                 variant='ghost'
                 size='sm'
-                onClick={() => setHistory([])}
+                onClick={clearHistory}
                 className='text-neutral-500 hover:text-neutral-900'
               >
                 Clear all
@@ -701,7 +729,7 @@ const DashboardView = () => {
                     <button
                       type='button'
                       aria-label='Delete from history'
-                      onClick={() => setHistory((prev) => prev.filter((h) => h.id !== item.id))}
+                      onClick={() => removeHistoryItem(item.id)}
                       className='cursor-pointer rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-900'
                     >
                       <Trash2 className='h-3.5 w-3.5' />

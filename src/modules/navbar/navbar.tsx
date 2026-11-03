@@ -67,7 +67,7 @@ const Navbar = () => {
             </ul>
 
             <div className='relative flex flex-row items-center gap-4'>
-                <Link href={"/dashboard"} >
+                <Link href={"/sign-in"} >
                     <CustomButton>
                         Launch App
                     </CustomButton>

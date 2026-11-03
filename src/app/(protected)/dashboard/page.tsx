@@ -1,10 +1,12 @@
+import { redirect } from 'next/navigation'
+import { getSession } from '@/lib/session'
 import DashboardView from '@/modules/dashboard/view/dashboard-view'
-import React from 'react'
 
-const Page = async () => {
-  return (
-    <DashboardView />
-  )
+const DashboardPage = async () => {
+  const session = await getSession()
+  if (!session) redirect('/sign-in')
+
+  return <DashboardView />
 }
 
-export default Page
+export default DashboardPage

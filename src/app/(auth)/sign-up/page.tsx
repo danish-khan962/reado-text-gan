@@ -1,9 +1,8 @@
-import React from 'react'
+import type { Metadata } from 'next'
+import AuthForm from '@/modules/auth/auth-form'
 
-const Page = () => {
-  return (
-    <div>Sign Up</div>
-  )
+export const metadata: Metadata = { title: 'Sign up' }
+
+export default function SignUpPage() {
+  return <AuthForm mode='sign-up' />
 }
-
-export default Page

@@ -1,11 +1,8 @@
-import React from 'react'
+import type { Metadata } from 'next'
+import AuthForm from '@/modules/auth/auth-form'
 
-const Page = () => {
-    return (
-        <div>
-            Sign In
-        </div>
-    )
+export const metadata: Metadata = { title: 'Sign in' }
+
+export default function SignInPage() {
+  return <AuthForm mode='sign-in' />
 }
-
-export default Page
